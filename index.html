@@ -42,10 +42,11 @@ button.stop{background:none;border:2px solid #fff;color:#fff;border-radius:999px
   const status = t => { statusEl.textContent = t; };
   const post = m => { try { window.opener && window.opener.postMessage(Object.assign({ av: 1 }, m), target); } catch (e) {} };
 
-  if (!window.opener || !OK_ORIGIN) { status("Open this from the orange mic in Agents City"); mic.disabled = true; tip.hidden = true; return; }
+  if (!OK_ORIGIN) { status("Open this from the orange mic in Agents City"); mic.disabled = true; tip.hidden = true; return; }
+  if (!window.opener) { status("Lost the link to Agents City"); tip.textContent = "Close this tab, allow pop-ups for claude.ai, then click the orange mic again."; mic.disabled = true; return; }
   if (!SR) { status("This browser can't listen. Use Chrome."); mic.disabled = true; post({ t: "error", code: "unsupported" }); return; }
 
-  let rec = null, want = false, finalText = "", timer = null, sending = false;
+  let rec = null, want = false, finalText = "", timer = null, sending = false, running = false, blocked = false;
   const PAUSE_MS = 1800;
   const clean = s => s.replace(/\s+/g, " ").trim();
   const sendWord = /^([\s\S]*?\S)[\s,.;:!?-]*\bsend(?:\s+it)?[\s.!?]*$/i;
@@ -64,7 +65,7 @@ button.stop{background:none;border:2px solid #fff;color:#fff;border-radius:999px
     if (rec) { try { rec.abort(); } catch (e) {} }
     rec = new SR();
     rec.lang = "en-US"; rec.continuous = true; rec.interimResults = true;
-    rec.onstart = () => { mic.classList.add("live"); status("Listening…"); post({ t: "listening" }); };
+    rec.onstart = () => { running = true; blocked = false; mic.classList.add("live"); status("Listening…"); post({ t: "listening" }); };
     rec.onresult = e => {
       let interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -80,11 +81,15 @@ button.stop{background:none;border:2px solid #fff;color:#fff;border-radius:999px
       if (clean(finalText) && !interim.trim()) timer = setTimeout(() => fire(finalText), PAUSE_MS);
     };
     rec.onerror = e => {
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") { want = false; status("Mic blocked. Allow it in the address bar, then click the mic."); post({ t: "error", code: "denied" }); }
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        want = false;
+        if (document.hasFocus()) { blocked = true; status("Mic blocked. Allow it in the address bar, then click the mic."); post({ t: "error", code: "denied" }); }
+        else { want = true; status("Click the mic to talk"); }
+      }
       else if (e.error === "no-speech") { /* keep going */ }
       else if (e.error !== "aborted") { status("Mic error: " + e.error); }
     };
-    rec.onend = () => { mic.classList.remove("live"); if (want && !sending) { setTimeout(() => { if (want) start(); }, 250); } else if (!sending) status("Paused. Click the mic to talk."); };
+    rec.onend = () => { running = false; mic.classList.remove("live"); if (blocked) return; if (want && !sending && document.hasFocus()) { setTimeout(() => { if (want && !running) start(); }, 250); } else if (!sending && !want) status("Paused. Click the mic to talk."); };
     want = true; sending = false;
     try { rec.start(); } catch (e) { status("Click the mic to start"); }
   }
@@ -99,6 +104,9 @@ button.stop{background:none;border:2px solid #fff;color:#fff;border-radius:999px
     else if (e.data.t === "pause") stop();
     else if (e.data.t === "close") window.close();
   });
+  /* Chrome only listens in a focused window: start (or resume) as soon as this window has focus */
+  window.addEventListener("focus", () => { if (want && !running && !sending && !blocked) start(); });
+  try { window.focus(); } catch (e) {}
   post({ t: "ready" });
   start();
 })();
