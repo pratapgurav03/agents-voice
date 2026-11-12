@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agents City Mic</title>
+<meta name="robots" content="noindex">
+<style>
+:root{--cobalt:#0350C4;--navy:#112967;--mint:#DDF5EC;--orange:#FA7D13}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--cobalt);color:#fff;font:600 15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:18px;text-align:center}
+.mic{width:84px;height:84px;border-radius:50%;border:3px solid var(--navy);background:var(--mint);color:var(--navy);display:grid;place-items:center;cursor:pointer;position:relative;transition:background .2s}
+.mic svg{width:34px;height:34px}
+.mic.live{background:var(--orange)}
+.mic.live::after{content:"";position:absolute;inset:-9px;border-radius:50%;border:3px solid var(--orange);animation:p 1.2s ease-out infinite}
+@keyframes p{from{transform:scale(.92);opacity:1}to{transform:scale(1.3);opacity:0}}
+@media (prefers-reduced-motion:reduce){.mic.live::after{animation:none}}
+.status{font-weight:900;letter-spacing:.06em;text-transform:uppercase;font-size:.8rem}
+.said{min-height:2.9em;max-width:340px;color:var(--mint);font-weight:500}
+.tip{font-size:.78rem;opacity:.8;font-weight:500;max-width:320px}
+button.stop{background:none;border:2px solid #fff;color:#fff;border-radius:999px;padding:6px 16px;font:800 .8rem system-ui;cursor:pointer}
+</style>
+</head>
+<body>
+<button class="mic" id="mic" type="button" aria-label="Start listening"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg></button>
+<div class="status" id="status" aria-live="polite">Starting…</div>
+<div class="said" id="said"></div>
+<div class="tip" id="tip">Talk normally. Pause, or end with “send”, to send it.</div>
+<button class="stop" id="stop" type="button">Close mic</button>
+<script>
+/* Agents City companion mic.
+   claude.ai does not give artifacts microphone access, so this small page (its own origin, its own
+   mic permission) listens and passes only the text to the Agents City window that opened it.
+   It never stores audio or text, and it only talks to an opener on claude.ai's artifact domain. */
+(() => {
+  const $ = id => document.getElementById(id);
+  const mic = $("mic"), statusEl = $("status"), said = $("said"), tip = $("tip");
+  const target = new URLSearchParams(location.search).get("o") || "";
+  const OK_ORIGIN = /^https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.claudeusercontent\.com$/.test(target) || /^http:\/\/localhost(:\d+)?$/.test(target);
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const status = t => { statusEl.textContent = t; };
+  const post = m => { try { window.opener && window.opener.postMessage(Object.assign({ av: 1 }, m), target); } catch (e) {} };
+
+  if (!window.opener || !OK_ORIGIN) { status("Open this from the orange mic in Agents City"); mic.disabled = true; tip.hidden = true; return; }
+  if (!SR) { status("This browser can't listen. Use Chrome."); mic.disabled = true; post({ t: "error", code: "unsupported" }); return; }
+
+  let rec = null, want = false, finalText = "", timer = null, sending = false;
+  const PAUSE_MS = 1800;
+  const clean = s => s.replace(/\s+/g, " ").trim();
+  const sendWord = /^([\s\S]*?\S)[\s,.;:!?-]*\bsend(?:\s+it)?[\s.!?]*$/i;
+
+  function fire(text) {
+    clearTimeout(timer);
+    text = clean(text);
+    if (!text) return;
+    sending = true; want = false;
+    try { rec && rec.stop(); } catch (e) {}
+    mic.classList.remove("live"); status("Sent. Waiting for the reply…");
+    said.textContent = text; finalText = "";
+    post({ t: "send", text });
+  }
+  function start() {
+    if (rec) { try { rec.abort(); } catch (e) {} }
+    rec = new SR();
+    rec.lang = "en-US"; rec.continuous = true; rec.interimResults = true;
+    rec.onstart = () => { mic.classList.add("live"); status("Listening…"); post({ t: "listening" }); };
+    rec.onresult = e => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) finalText += r[0].transcript + " "; else interim += r[0].transcript;
+      }
+      const live = clean(finalText + interim);
+      said.textContent = live;
+      post({ t: "interim", text: live });
+      clearTimeout(timer);
+      const m = clean(finalText).match(sendWord);
+      if (m && !interim.trim()) { fire(m[1]); return; }
+      if (clean(finalText) && !interim.trim()) timer = setTimeout(() => fire(finalText), PAUSE_MS);
+    };
+    rec.onerror = e => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") { want = false; status("Mic blocked. Allow it in the address bar, then click the mic."); post({ t: "error", code: "denied" }); }
+      else if (e.error === "no-speech") { /* keep going */ }
+      else if (e.error !== "aborted") { status("Mic error: " + e.error); }
+    };
+    rec.onend = () => { mic.classList.remove("live"); if (want && !sending) { setTimeout(() => { if (want) start(); }, 250); } else if (!sending) status("Paused. Click the mic to talk."); };
+    want = true; sending = false;
+    try { rec.start(); } catch (e) { status("Click the mic to start"); }
+  }
+  function stop() { want = false; clearTimeout(timer); try { rec && rec.stop(); } catch (e) {} mic.classList.remove("live"); status("Paused. Click the mic to talk."); }
+
+  mic.onclick = () => { if (want) stop(); else start(); };
+  $("stop").onclick = () => { post({ t: "closed" }); window.close(); };
+  window.addEventListener("beforeunload", () => post({ t: "closed" }));
+  window.addEventListener("message", e => {
+    if (e.origin !== target || e.source !== window.opener || !e.data || e.data.av !== 1) return;
+    if (e.data.t === "listen") start();
+    else if (e.data.t === "pause") stop();
+    else if (e.data.t === "close") window.close();
+  });
+  post({ t: "ready" });
+  start();
+})();
+</script>
+</body>
+</html>
